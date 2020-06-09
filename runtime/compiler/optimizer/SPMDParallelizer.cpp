@@ -623,6 +623,9 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
    if (_visitedNodes.isSet(node->getGlobalIndex()))
       return true;
 
+   if (!isCheckMode)
+      traceMsg(comp, "   node n%dn has reference_count = %u\n", node->getGlobalIndex(), node->getReferenceCount());
+
    _visitedNodes.set(node->getGlobalIndex());
 
    bool trace = comp->trace(OMR::SPMDKernelParallelization);
@@ -712,9 +715,7 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
 
 	       if (trace && !platformSupport)
                   traceMsg(comp, "   Found use of induction variable at node [%p] - platform does not support this vectorization\n", node);
-               if (trace && platformSupport)
-                  traceMsg(comp, "   Found use of induction variable at node [%p] - vectorization disabled for now\n", node);
-               return false;  // see : eclipse/openj9/9446
+               return true;
                }
             }
          }
@@ -723,9 +724,11 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
          {
          if (scalarOp.isLoadIndirect() && !hasPIV(node, piv)) // SIMD_TODO: strictly speaking should check for stride == 0
             {
+               traceMsg(comp, "   node n%dn was selected for getVectorAccess\n", node->getGlobalIndex());
             genVectorAccessForScalar(parent, childIndex, node);
             return true;
             }
+         
 
          TR::SymbolReference *symRef = node->getSymbolReference();
          TR::SymbolReference *vecSymRef = pSPMDInfo->getVectorSymRef(symRef);
