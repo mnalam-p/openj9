@@ -363,7 +363,7 @@ bool TR_SPMDKernelParallelizer::visitTreeTopToSIMDize(TR::TreeTop *tt, TR_SPMDKe
             if (!affine || !(pivStride*getUnrollCount(node->getDataType()) == VECTOR_SIZE))
                return false;
             }
-         return visitNodeToSIMDize(node, 1, node->getSecondChild(), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, /*storeSymRef*/0);
+         return visitNodeToSIMDize(node, 1, node->getSecondChild(), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, /*storeSymRef*/0, tt);
          }
       else
          {
@@ -436,7 +436,7 @@ bool TR_SPMDKernelParallelizer::visitTreeTopToSIMDize(TR::TreeTop *tt, TR_SPMDKe
                   if (trace)
                      traceMsg(comp, "   Duplicating trees [%p] into [%p] and vectorizing for Vectorized PIV increment\n", node, dupNode);
 
-                  return visitNodeToSIMDize(dupNode, 0, dupNode->getFirstChild(), pSPMDInfo, false, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, /*storeSymRef*/0);
+                  return visitNodeToSIMDize(dupNode, 0, dupNode->getFirstChild(), pSPMDInfo, false, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, /*storeSymRef*/0, tt);
                   }
 
                // this is an increment step of the PIV, don't vectorize it
@@ -592,7 +592,7 @@ bool TR_SPMDKernelParallelizer::visitTreeTopToSIMDize(TR::TreeTop *tt, TR_SPMDKe
             TR::Node::recreate(node, vectorOpCode);
             }
 
-         return visitNodeToSIMDize(node, 0, node->getFirstChild(), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, node->getSymbolReference());
+         return visitNodeToSIMDize(node, 0, node->getFirstChild(), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, node->getSymbolReference(), tt);
          }
       }
    else if (scalarOp.isBranch() || node->getOpCodeValue()==TR::BBEnd ||
@@ -618,17 +618,15 @@ bool TR_SPMDKernelParallelizer::visitTreeTopToSIMDize(TR::TreeTop *tt, TR_SPMDKe
 TR::Block *findLoopInvariantBlockSIMD(TR::Compilation *comp, TR_RegionStructure *loop);
 TR::Block *createLoopInvariantBlockSIMD(TR::Compilation *comp, TR_RegionStructure *loop);
 
-bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t childIndex, TR::Node *node, TR_SPMDKernelInfo *pSPMDInfo, bool isCheckMode, TR_RegionStructure *loop, TR::Compilation *comp, SharedSparseBitVector *usesInLoop, CS2::ArrayOf<TR::Node *, TR::Allocator> &useNodesOfDefsInLoop, TR_UseDefInfo *useDefInfo, SharedSparseBitVector &defsInLoop, TR_HashTab* reductionHashTab, TR::SymbolReference* storeSymRef)
+bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t childIndex, TR::Node *node, TR_SPMDKernelInfo *pSPMDInfo, bool isCheckMode, TR_RegionStructure *loop, TR::Compilation *comp, SharedSparseBitVector *usesInLoop, CS2::ArrayOf<TR::Node *, TR::Allocator> &useNodesOfDefsInLoop, TR_UseDefInfo *useDefInfo, SharedSparseBitVector &defsInLoop, TR_HashTab* reductionHashTab, TR::SymbolReference* storeSymRef, TR::TreeTop * treeTop)
    {
    if (_visitedNodes.isSet(node->getGlobalIndex()))
       return true;
 
-   if (!isCheckMode)
-      traceMsg(comp, "   node n%dn has reference_count = %u\n", node->getGlobalIndex(), node->getReferenceCount());
-
    _visitedNodes.set(node->getGlobalIndex());
 
    bool trace = comp->trace(OMR::SPMDKernelParallelization);
+   bool containsPIV = false;
 
    TR::SymbolReference *piv = pSPMDInfo->getInductionVariableSymRef();
    TR::ILOpCode scalarOp = node->getOpCode();
@@ -686,6 +684,57 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
    TR::ILOpCode vectorOp;
    vectorOp.setOpCodeValue(vectorOpCode);
 
+   if (!isCheckMode) {
+      if (node->getReferenceCount() > 1 && node->getSymbolReference() != piv && (containsPIV = hasPIV(node, piv))) {
+         traceMsg(comp, "   Uncommoning potential dangerous tree where the common node n%dn at [%p] contains PIV that can be vectorized\n",
+            node->getGlobalIndex(), node);
+         TR::Node * curNode = node->duplicateTree();
+         node->recursivelyDecReferenceCount();
+         traceMsg(comp, "   Uncommoned from node n%dn [%p] to n%dn [%p]\n", node->getGlobalIndex(), node, curNode->getGlobalIndex(), curNode);
+         int idx = parent->findChildIndex(node);
+         anchorNode(node, treeTop);
+         parent->setAndIncChild(idx, curNode);
+         _visitedNodes.reset(node->getGlobalIndex());
+         _visitedNodes.set(curNode->getGlobalIndex());
+         node = curNode;
+      }            
+   }
+         //    for(int i=0; i < node->getNumChildren(); i++) {
+         //       TR::Node * curNode = node->getChild(i);
+         //       if (hasPIV(curNode, piv)) {
+         //          traceMsg(comp, " got piv\n");
+         //          TR::TreeTop * lastTreeTop = treeTop->getNextRealTreeTop();
+         //          traceMsg(comp, " got last real piv\n");
+         //          TR::Node * lastNode = lastTreeTop->getNode();
+         //          traceMsg(comp, " got last node\n");
+         //          while(!lastTreeTop->getNode()->getBlock()->isEndBlock()) {
+         //             lastNode = lastTreeTop->getNode();
+         //             if (lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore)
+         //                break;
+         //             lastTreeTop = lastTreeTop->getPrevRealTreeTop();
+         //          }
+         //          traceMsg(comp, " found piv usage in loop control\n");
+         //          if ((lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore) && hasPIV(lastNode, piv)) {
+         //             traceMsg(comp, " trying to duplicate node\n");
+         //             TR::Node * curNode = node->duplicateTree();
+         //             node->recursivelyDecReferenceCount();
+         //             traceMsg(comp, " node n%dn refCount %d that uses PIV\n", curNode->getGlobalIndex(), node->getReferenceCount());
+         //             int idx = parent->findChildIndex(node);
+         //             anchorNode(node, treeTop);
+         //             //TR::Node * unCommonNode = node->uncommon();
+         //             //node->recursivelyDecReferenceCount();
+         //             //parent->removeChild(idx);
+         //             parent->setAndIncChild(idx, curNode);
+         //             _visitedNodes.reset(node->getGlobalIndex());
+         //             //_visitedNodes.set(curNode->getGlobalIndex());
+         //             traceMsg(comp, " performing uncommoning from n%dn to n%dn\n", node->getGlobalIndex(), curNode->getGlobalIndex());
+         //             node = curNode;
+         //             break;
+         //          }
+         //       }
+         //    }
+         // }
+
    if (scalarOp.isLoadVar())
       {
       if (isCheckMode)
@@ -715,7 +764,7 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
 
 	       if (trace && !platformSupport)
                   traceMsg(comp, "   Found use of induction variable at node [%p] - platform does not support this vectorization\n", node);
-               return true;
+               return platformSupport;
                }
             }
          }
@@ -908,7 +957,7 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
       {
       for (int32_t i = 0; i < node->getNumChildren(); i++)
          {
-         if (!visitNodeToSIMDize(node, i, node->getChild(i), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, storeSymRef))
+         if (!visitNodeToSIMDize(node, i, node->getChild(i), pSPMDInfo, isCheckMode, loop, comp, usesInLoop, useNodesOfDefsInLoop, useDefInfo, defsInLoop, reductionHashTab, storeSymRef, treeTop))
             return false;
          }
 

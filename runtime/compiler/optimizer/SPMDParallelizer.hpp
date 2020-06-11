@@ -222,7 +222,7 @@ class TR_SPMDKernelParallelizer : public TR_LoopTransformer
    bool vectorize(TR::Compilation *comp, TR_RegionStructure *loop, TR_PrimaryInductionVariable *piv, TR_HashTab* reductionHashTab, int32_t peelCount, TR::Optimizer *optimizer=NULL);
    void vectorizer_cleanup(TR::Compilation *comp, TR::Optimizer *optimizer=NULL);
 
-   bool visitNodeToSIMDize(TR::Node *parent, int32_t childIndex, TR::Node *node, TR_SPMDKernelInfo *pSPMDInfo, bool isCheckMode, TR_RegionStructure *loop, TR::Compilation *comp, SharedSparseBitVector* usesInLoop, CS2::ArrayOf<TR::Node *, TR::Allocator> &useNodesOfDefsInLoop, TR_UseDefInfo *useDefInfo, SharedSparseBitVector &defsInLoop, TR_HashTab* reductionHashTab, TR::SymbolReference* storeSymRef);
+   bool visitNodeToSIMDize(TR::Node *parent, int32_t childIndex, TR::Node *node, TR_SPMDKernelInfo *pSPMDInfo, bool isCheckMode, TR_RegionStructure *loop, TR::Compilation *comp, SharedSparseBitVector* usesInLoop, CS2::ArrayOf<TR::Node *, TR::Allocator> &useNodesOfDefsInLoop, TR_UseDefInfo *useDefInfo, SharedSparseBitVector &defsInLoop, TR_HashTab* reductionHashTab, TR::SymbolReference* storeSymRef, TR::TreeTop * treeTop);
    bool visitTreeTopToSIMDize(TR::TreeTop *tt, TR_SPMDKernelInfo *pSPMDInfo, bool isCheckMode, TR_RegionStructure *loop, CS2::ArrayOf<TR::Node *, TR::Allocator> &useNodesOfDefsInLoop, TR::Compilation *comp, TR_UseDefInfo *useDefInfo, SharedSparseBitVector &defsInLoop, SharedSparseBitVector* usesInLoop, TR_HashTab* reductionHashTab);
 
    bool autoSIMDReductionSupported(TR::Compilation *comp, TR::Node *node);
