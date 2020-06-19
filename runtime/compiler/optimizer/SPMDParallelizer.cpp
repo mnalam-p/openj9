@@ -683,58 +683,94 @@ bool TR_SPMDKernelParallelizer::visitNodeToSIMDize(TR::Node *parent, int32_t chi
 
    TR::ILOpCode vectorOp;
    vectorOp.setOpCodeValue(vectorOpCode);
-
+   if (isCheckMode) {
+      if (node->getReferenceCount() > 1 && node->getSymbolReference() != piv && hasPIV(node, piv)) {
+         traceMsg(comp, "   found common node n%dn [%p] that contains PIV among its children\n",
+            node->getGlobalIndex(), node);
+	 bool mightHaveSideEffect = false;
+         TR::TreeTop * nextTreeTop = treeTop->getNextRealTreeTop();
+         while(nextTreeTop->getNode()->getOpCodeValue() != TR::BBEnd) {
+            TR::Node * curNode = nextTreeTop->getNode();
+            if (curNode->getOpCodeValue() == TR::istore || curNode->getOpCodeValue() == TR::lstore || curNode->getOpCode().isCompBranchOnly()) {
+               std::stack<TR::Node *> stk;
+               stk.push(curNode);
+               while(!stk.empty()) {
+                  TR::Node * selectedNode = stk.top();
+                  stk.pop();
+                  if (selectedNode->getGlobalIndex() == node->getGlobalIndex()) {
+                     mightHaveSideEffect = true;
+		     break;
+		     //return false;
+                  }
+		  mightHaveSideEffect = false;
+                  for(int idx = 0; idx < selectedNode->getNumChildren(); idx++)
+                     stk.push(selectedNode->getChild(idx));
+               }
+            }
+	    nextTreeTop = nextTreeTop->getNextRealTreeTop();
+         }
+	 if (mightHaveSideEffect) {
+            traceMsg(comp, "   common node n%dn [%p] may cause side effect after vectorization : vectorization disabled \n");
+	    return false;
+	 }
+      }
+   }
+/*
    if (!isCheckMode) {
       if (node->getReferenceCount() > 1 && node->getSymbolReference() != piv && (containsPIV = hasPIV(node, piv))) {
          traceMsg(comp, "   Uncommoning potential dangerous tree where the common node n%dn at [%p] contains PIV that can be vectorized\n",
             node->getGlobalIndex(), node);
-         TR::Node * curNode = node->duplicateTree();
-         node->recursivelyDecReferenceCount();
+         TR::Node * curNode = node->uncommon();//node->duplicateTree();
+//	 node->decReferenceCount();
+        // node->recursivelyDecReferenceCount();
          traceMsg(comp, "   Uncommoned from node n%dn [%p] to n%dn [%p]\n", node->getGlobalIndex(), node, curNode->getGlobalIndex(), curNode);
          int idx = parent->findChildIndex(node);
          anchorNode(node, treeTop);
          parent->setAndIncChild(idx, curNode);
          _visitedNodes.reset(node->getGlobalIndex());
-         _visitedNodes.set(curNode->getGlobalIndex());
+         //_visitedNodes.set(curNode->getGlobalIndex());
          node = curNode;
       }            
    }
-         //    for(int i=0; i < node->getNumChildren(); i++) {
-         //       TR::Node * curNode = node->getChild(i);
-         //       if (hasPIV(curNode, piv)) {
-         //          traceMsg(comp, " got piv\n");
-         //          TR::TreeTop * lastTreeTop = treeTop->getNextRealTreeTop();
-         //          traceMsg(comp, " got last real piv\n");
-         //          TR::Node * lastNode = lastTreeTop->getNode();
-         //          traceMsg(comp, " got last node\n");
-         //          while(!lastTreeTop->getNode()->getBlock()->isEndBlock()) {
-         //             lastNode = lastTreeTop->getNode();
-         //             if (lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore)
-         //                break;
-         //             lastTreeTop = lastTreeTop->getPrevRealTreeTop();
-         //          }
-         //          traceMsg(comp, " found piv usage in loop control\n");
-         //          if ((lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore) && hasPIV(lastNode, piv)) {
-         //             traceMsg(comp, " trying to duplicate node\n");
-         //             TR::Node * curNode = node->duplicateTree();
-         //             node->recursivelyDecReferenceCount();
-         //             traceMsg(comp, " node n%dn refCount %d that uses PIV\n", curNode->getGlobalIndex(), node->getReferenceCount());
-         //             int idx = parent->findChildIndex(node);
+   
+if (!isCheckMode)
+	if (node->getReferenceCount()) {
+             for(int i=0; i < node->getNumChildren(); i++) {
+                TR::Node * curNode = node->getChild(i);
+                if (hasPIV(curNode, piv)) {
+                   traceMsg(comp, " got piv\n");
+                   TR::TreeTop * lastTreeTop = treeTop->getNextRealTreeTop();
+                   traceMsg(comp, " got last real piv\n");
+                   TR::Node * lastNode = lastTreeTop->getNode();
+                   traceMsg(comp, " got last node\n");
+                   while(!lastTreeTop->getNode()->getBlock()->isEndBlock()) {
+                      lastNode = lastTreeTop->getNode();
+                      if (lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore)
+                         break;
+                      lastTreeTop = lastTreeTop->getPrevRealTreeTop();
+                   }
+                   traceMsg(comp, " found piv usage in loop control\n");
+                   if ((lastNode->getOpCodeValue() == TR::istore || lastNode->getOpCodeValue() == TR::lstore) && hasPIV(lastNode, piv)) {
+                      traceMsg(comp, " trying to duplicate node\n");
+                     // TR::Node * curNode = node->duplicateTree();
+                    //  node->recursivelyDecReferenceCount();
+                      traceMsg(comp, " node n%dn refCount %d that uses PIV\n", curNode->getGlobalIndex(), node->getReferenceCount());
+                      int idx = parent->findChildIndex(node);
          //             anchorNode(node, treeTop);
-         //             //TR::Node * unCommonNode = node->uncommon();
+                      TR::Node * unCommonNode = node->uncommon();
          //             //node->recursivelyDecReferenceCount();
          //             //parent->removeChild(idx);
-         //             parent->setAndIncChild(idx, curNode);
-         //             _visitedNodes.reset(node->getGlobalIndex());
-         //             //_visitedNodes.set(curNode->getGlobalIndex());
-         //             traceMsg(comp, " performing uncommoning from n%dn to n%dn\n", node->getGlobalIndex(), curNode->getGlobalIndex());
-         //             node = curNode;
-         //             break;
-         //          }
-         //       }
-         //    }
-         // }
-
+                      parent->setAndIncChild(idx, curNode);
+                      _visitedNodes.reset(node->getGlobalIndex());
+                      _visitedNodes.set(curNode->getGlobalIndex());
+                      traceMsg(comp, " performing uncommoning from n%dn to n%dn\n", node->getGlobalIndex(), curNode->getGlobalIndex());
+                      node = curNode;
+                      break;
+                   }
+                }
+             }
+          }
+*/
    if (scalarOp.isLoadVar())
       {
       if (isCheckMode)
