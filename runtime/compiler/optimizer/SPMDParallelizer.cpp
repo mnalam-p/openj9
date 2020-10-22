@@ -1441,6 +1441,29 @@ bool TR_SPMDKernelParallelizer::processSPMDKernelLoopForSIMDize(TR::Compilation 
             {
             // increment of PIV
             traceMsg(comp, "Reducing the number of iterations of the loop %d at storeNode [%p] by vector length %d \n",loop->getNumber(), storeNode, unrollCount);
+	    TR_ASSERT(storeNode->getFirstChild()->getOpCode().isAdd || storeNode->getFirstChild()->getOpCode().isSub(), "PIV increment should be simple (either by add or by sub");
+	    TR_ASSERT(storeNode->getFirstChild()->getSecondChild()->getOpCode().isConst(), "PIV increment should have const increment value");
+            if (storeNode->getFirstChild()->getReferenceCount() > 1)
+               {
+	       // We need to uncommon the parent node only (isub/iadd), but keep the commoned children (if it has any such child).
+	       // Uncommoning of parent node prevents the propagation of loop stride to other parts in the block. For example, if the
+	       // parent commoned node was used in address calculation, then changing the stride will introduce bug as the address calculation
+	       // will be affected.
+	       // Keeping the commoned children prevents unwanted side effect. For example, commoned iload should stay the same,
+	       // even if isub/iadd is uncommoned. That way we know it will use the old iload value, not load the value again.
+	       // Const node will be uncommoned before changing the stride to match with vector operations, so we don't need to uncommon it
+	       // here.
+               TR::Node *newNode = storeNode->getFirstChild()->duplicateTree(false);
+               TR::Node *oldNode = storeNode->getFirstChild();
+               oldNode->recursivelyDecReferenceCount();
+	       // Anchor the old node. If the new value of piv is used after the increment, high chances that it may be commoned.
+               anchorNode(oldNode, tt);
+               _visitedNodes.reset(oldNode->getGlobalIndex());
+               storeNode->setAndIncChild(0, newNode);
+	       traceMsg(comp, "Parent node n%dn [%p] is uncommoned to a new node n%dn [%p]\n", oldNode->getGlobalIndex(), oldNode,
+                newNode->getGlobalIndex(), newNode);
+               }
+
             TR::Node *constNode = storeNode->getFirstChild()->getSecondChild()->duplicateTree();
             constNode->setInt(constNode->getInt() * vectorSize);
             storeNode->getFirstChild()->getSecondChild()->recursivelyDecReferenceCount();
