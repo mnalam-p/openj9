@@ -7865,6 +7865,7 @@ void J9::Power::TreeEvaluator::genWrtbarForArrayCopy(TR::Node *node, TR::Registe
    bool ageCheckIsNeeded = false;
    bool cardMarkIsNeeded = false;
    auto gcMode = TR::Compiler->om.writeBarrierType();
+   TR::RegisterDependencyConditions *conditions = NULL;
 
    ageCheckIsNeeded = (gcMode == gc_modron_wrtbar_oldcheck || gcMode == gc_modron_wrtbar_cardmark_and_oldcheck || gcMode == gc_modron_wrtbar_always);
    cardMarkIsNeeded = (gcMode == gc_modron_wrtbar_cardmark || gcMode == gc_modron_wrtbar_cardmark_incremental);
@@ -7878,7 +7879,6 @@ void J9::Power::TreeEvaluator::genWrtbarForArrayCopy(TR::Node *node, TR::Registe
       TR::Register *temp2Reg;
       TR::Register *condReg = cg->allocateRegister(TR_CCR);
       TR::Instruction *gcPoint;
-      TR::RegisterDependencyConditions *conditions;
 
       if (gcMode != gc_modron_wrtbar_always)
          {
@@ -7926,12 +7926,6 @@ void J9::Power::TreeEvaluator::genWrtbarForArrayCopy(TR::Node *node, TR::Registe
       cg->machine()->setLinkRegisterKilled(true);
       cg->setHasCall();
 
-      if (gcMode != gc_modron_wrtbar_always)
-         {
-         cg->stopUsingRegister(temp1Reg);
-         cg->stopUsingRegister(temp2Reg);
-         }
-      cg->stopUsingRegister(condReg);
       // This GC point can only happen when there is an exception. As a result, we can ditch
       // all registers.
       gcPoint->PPCNeedsGCMap(0xFFFFFFFF);
@@ -7946,7 +7940,7 @@ void J9::Power::TreeEvaluator::genWrtbarForArrayCopy(TR::Node *node, TR::Registe
          TR::Register *temp1Reg = cg->allocateRegister();
          TR::Register *temp2Reg = cg->allocateRegister();
          TR::Register *temp3Reg = cg->allocateRegister();
-         TR::RegisterDependencyConditions *conditions = createConditionsAndPopulateVSXDeps(cg, 7);
+         conditions = createConditionsAndPopulateVSXDeps(cg, 7);
 
          TR::addDependency(conditions, cndReg, TR::RealRegister::cr0, TR_CCR, cg);
          TR::addDependency(conditions, dstObjReg, TR::RealRegister::NoReg, TR_GPR, cg);
@@ -7959,14 +7953,15 @@ void J9::Power::TreeEvaluator::genWrtbarForArrayCopy(TR::Node *node, TR::Registe
          VMCardCheckEvaluator(node, dstObjReg, cndReg, temp1Reg, temp2Reg, temp3Reg, conditions, cg);
          generateDepLabelInstruction(cg, TR::InstOpCode::label, node, generateLabelSymbol(cg), conditions);
 
-         cg->stopUsingRegister(cndReg);
-         cg->stopUsingRegister(temp1Reg);
-         cg->stopUsingRegister(temp2Reg);
-         cg->stopUsingRegister(temp3Reg);
          }
       else
          TR_ASSERT(0, "genWrtbarForArrayCopy card marking not supported for RT");
       }
+      if (conditions)
+         {
+         TR::Register *regs[1] = { dstObjReg };
+         conditions->stopUsingDepRegs(cg, 1, regs);
+         }
    }
 
 static TR::Register *genCAS(TR::Node *node, TR::CodeGenerator *cg, TR::Register *objReg, TR::Register *offsetReg, TR::Register *oldVReg, TR::Register *newVReg, TR::Register *cndReg,
@@ -12341,35 +12336,26 @@ TR::Register *J9::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::C
 
          TR::TreeEvaluator::genWrtbarForArrayCopy(node, srcObjReg, dstObjReg, cg);
 
+         TR::Register *regs[5];
+         int regIdx = 0;
          cg->decReferenceCount(srcObjNode);
          cg->decReferenceCount(dstObjNode);
          cg->decReferenceCount(srcAddrNode);
          cg->decReferenceCount(dstAddrNode);
          cg->decReferenceCount(lengthNode);
 
-         if (stopUsingCopyReg1)
-            cg->stopUsingRegister(srcObjReg);
-         if (stopUsingCopyReg2)
-            cg->stopUsingRegister(dstObjReg);
-         if (stopUsingCopyReg3)
-            cg->stopUsingRegister(srcAddrReg);
-         if (stopUsingCopyReg4)
-            cg->stopUsingRegister(dstAddrReg);
-         if (stopUsingCopyReg5)
-            cg->stopUsingRegister(lengthReg);
+         if (!stopUsingCopyReg1)
+            regs[regIdx++] = srcObjReg;
+         if (!stopUsingCopyReg2)
+            regs[regIdx++] = dstObjReg;
+         if (!stopUsingCopyReg3)
+            regs[regIdx++] = srcAddrReg;
+         if (!stopUsingCopyReg4)
+            regs[regIdx++] = dstAddrReg;
+         if (!stopUsingCopyReg5)
+            regs[regIdx++] = lengthReg;
 
-         cg->stopUsingRegister(tmp1Reg);
-         cg->stopUsingRegister(tmp2Reg);
-         cg->stopUsingRegister(tmp3Reg);
-         cg->stopUsingRegister(tmp4Reg);
-         cg->stopUsingRegister(fp1Reg);
-         cg->stopUsingRegister(fp2Reg);
-         cg->stopUsingRegister(fp3Reg);
-         cg->stopUsingRegister(fp4Reg);
-
-         cg->stopUsingRegister(r3Reg);
-         cg->stopUsingRegister(condReg);
-
+         deps->stopUsingDepRegs(cg, regIdx, regs);
          cg->machine()->setLinkRegisterKilled(true);
          cg->setHasCall();
 
@@ -12681,29 +12667,21 @@ TR::Register *J9::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::C
    cg->decReferenceCount(dstAddrNode);
    cg->decReferenceCount(lengthNode);
 
-   if (stopUsingCopyReg1)
-      cg->stopUsingRegister(srcObjReg);
-   if (stopUsingCopyReg2)
-      cg->stopUsingRegister(dstObjReg);
-   if (stopUsingCopyReg3)
-      cg->stopUsingRegister(srcAddrReg);
-   if (stopUsingCopyReg4)
-      cg->stopUsingRegister(dstAddrReg);
+   TR::Register *regs[5];
+   int regIdx = 0;
+
+   if (!stopUsingCopyReg1)
+      regs[regIdx++] = srcObjReg;
+   if (!stopUsingCopyReg2)
+      regs[regIdx++] = dstObjReg;
+   if (!stopUsingCopyReg3)
+      regs[regIdx++] = srcAddrReg;
+   if (!stopUsingCopyReg4)
+      regs[regIdx++] = dstAddrReg;
    if (stopUsingCopyReg5)
-      cg->stopUsingRegister(lengthReg);
+      regs[regIdx++] = lengthReg;
 
-   cg->stopUsingRegister(tmp1Reg);
-   cg->stopUsingRegister(tmp2Reg);
-   cg->stopUsingRegister(tmp3Reg);
-   cg->stopUsingRegister(tmp4Reg);
-   cg->stopUsingRegister(fp1Reg);
-   cg->stopUsingRegister(fp2Reg);
-   cg->stopUsingRegister(vec0Reg);
-   cg->stopUsingRegister(vec1Reg);
-   cg->stopUsingRegister(r3Reg);
-   cg->stopUsingRegister(r4Reg);
-   cg->stopUsingRegister(condReg);
-
+   deps->stopUsingDepRegs(cg, regIdx, regs);
    cg->machine()->setLinkRegisterKilled(true);
    cg->setHasCall();
 
