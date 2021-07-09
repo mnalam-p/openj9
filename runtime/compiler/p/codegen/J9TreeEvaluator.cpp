@@ -10596,8 +10596,179 @@ static TR::Register *inlineEncodeUTF16(TR::Node *node, TR::CodeGenerator *cg)
    return outputLenReg;
    }
 
+static TR::Register *inlineIntrinsicIndexOfP10(TR::Node *node, TR::CodeGenerator *cg, bool isLatin1)
+   {
+   TR::Compilation *comp = cg->comp();
+   auto vectorCompareOp = isLatin1 ? TR::InstOpCode::vcmpequb_r : TR::InstOpCode::vcmpequh_r;
+   auto scalarLoadOp = isLatin1 ? TR::InstOpCode::lbzx : TR::InstOpCode::lhzx;
+
+   TR::Register *array = cg->evaluate(node->getChild(1));
+   TR::Register *ch = cg->evaluate(node->getChild(2));
+   TR::Register *offset = cg->evaluate(node->getChild(3));
+   TR::Register *length = cg->evaluate(node->getChild(4));
+
+   TR::Register *cr6 = cg->allocateRegister(TR_CCR);
+
+   TR::LabelSymbol *startLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *mainLoop = generateLabelSymbol(cg);
+   TR::LabelSymbol *resultLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *endLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *exactResult = generateLabelSymbol(cg);
+   TR::LabelSymbol *residueLabel = generateLabelSymbol(cg);
+
+   TR::Register *position = cg->allocateRegister();
+   TR::Register *endPos = cg->allocateRegister();
+   TR::Register *arrAddress = cg->allocateRegister();
+   TR::Register *result = cg->allocateRegister();
+   TR::Register *loopCnt = cg->allocateRegister();
+   TR::Register *target = cg->allocateRegister();
+   TR::Register *vec0 = cg->allocateRegister(TR_VRF);
+   TR::Register *vec1 = cg->allocateRegister(TR_VRF);
+   TR::Register *vec2 = cg->allocateRegister(TR_VRF);
+
+   startLabel->setStartInternalControlFlow();
+   endLabel->setEndInternalControlFlow();
+
+   generateLabelInstruction(cg, TR::InstOpCode::label, node, startLabel);
+
+   generateTrg1Src1Instruction(cg, TR::InstOpCode::extsw, node, position, offset);
+   generateTrg1Src1Instruction(cg, TR::InstOpCode::extsw, node, endPos, length);
+   generateTrg1ImmInstruction(cg, TR::InstOpCode::li, node, result, -1);
+
+   // check empty
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::cmp4, node, cr6, position, endPos);
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::bge, node, exactResult, cr6);
+
+   generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi, node, arrAddress, array, TR::Compiler->om.contiguousArrayHeaderSizeInBytes());
+
+   // match first byte
+   generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, target, ch, 0, isLatin1 ? 0xFF : 0xFFFF);
+   generateTrg1MemInstruction(cg, scalarLoadOp, node, loopCnt, TR::MemoryReference::createWithIndexReg(cg, position, arrAddress, isLatin1 ? 1 : 2));
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::cmp4, node, cr6, loopCnt, target);
+   generateTrg1Src3Instruction(cg, TR::InstOpCode::iseleq, node, result, position, result, cr6);
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::beq, node, exactResult, cr6);
+
+   generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi, node, position, position, 1);
+
+   if (!isLatin1)
+      {
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, position, position, position);
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, endPos, endPos, endPos);
+      }
+
+   generateTrg1Src1Instruction(cg, TR::InstOpCode::mtvsrwz, node, vec1, target);
+   if (isLatin1)
+      generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::vspltb, node, vec1, vec1, 7);
+   else
+      generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::vsplth, node, vec1, vec1, 3);
+
+
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::subf, node, loopCnt, endPos, position);
+   generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, target, loopCnt, 0, 0xFF);
+   generateShiftRightLogicalImmediate(cg, node, loopCnt, loopCnt, 4);
+   generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::cmpi4, node, cr6, loopCnt, 0);
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::beq, node, residueLabel, cr6);
+
+   generateSrc1Instruction(cg, TR::InstOpCode::mtctr, node, loopCnt);
+   generateLabelInstruction(cg, TR::InstOpCode::label, node, mainLoop);      // mainloop
+   if (!isLatin1)
+      {
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::lxvh8x, node, vec0, arrAddress, position);
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::vcmpequh_r, node, vec0, vec0, vec1);
+      }
+   else
+      {
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::lxvb16x, node, vec0, arrAddress, position);
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::vcmpequb_r, node, vec0, vec0, vec1);
+      }
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::bne, node, resultLabel, cr6);
+   generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi, node, position, position, 16);
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::bdnz, node, mainLoop, cr6);
+
+   generateLabelInstruction(cg, TR::InstOpCode::label, node, residueLabel);
+
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, arrAddress, arrAddress, position);
+   generateShiftLeftImmediateLong(cg, node, loopCnt, loopCnt, 56);
+
+   if (!comp->target().cpu.isLittleEndian())
+      {
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::lxvl, node, vec0, arrAddress, target);
+      }
+   else
+      {
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::lxvll, node, vec0, arrAddress, target);
+      }
+
+   if (isLatin1)
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::vcmpequb, node, vec0, vec0, vec1);
+   else
+      generateTrg1Src2Instruction(cg, TR::InstOpCode::vcmpequh, node, vec0, vec0, vec1);
+   
+   generateLabelInstruction(cg, TR::InstOpCode::label, node, resultLabel);  // resultLabel
+   generateTrg1Src1Instruction(cg, TR::InstOpCode::vclzlsbb, node, loopCnt, vec0);
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, loopCnt, loopCnt, position);
+   if (!isLatin1)
+      {
+      generateShiftRightLogicalImmediate(cg, node, loopCnt, loopCnt, 1);
+      }
+   generateTrg1Src2Instruction(cg, TR::InstOpCode::cmp4, node, cr6, loopCnt, endPos);
+
+   generateLabelInstruction(cg, TR::InstOpCode::label, node, exactResult); // exactResult
+   generateTrg1Src3Instruction(cg, TR::InstOpCode::isellt, node, result, loopCnt, result, cr6);
+   // end
+
+   TR::RegisterDependencyConditions *deps = new (cg->trHeapMemory()) TR::RegisterDependencyConditions(0, 16, cg->trMemory());
+
+   if (node->getChild(1)->getReferenceCount() != 1)
+      {
+      deps->addPostCondition(array, TR::RealRegister::NoReg);
+      deps->getPostConditions()->getRegisterDependency(deps->getAddCursorForPost() - 1)->setExcludeGPR0();
+      }
+   if (node->getChild(2)->getReferenceCount() != 1)
+      deps->addPostCondition(ch, TR::RealRegister::NoReg);
+   if (node->getChild(3)->getReferenceCount() != 1)
+      deps->addPostCondition(offset, TR::RealRegister::NoReg);
+   if (node->getChild(4)->getReferenceCount() != 1)
+      deps->addPostCondition(length, TR::RealRegister::NoReg);
+
+   deps->addPostCondition(cr6, TR::RealRegister::cr6);
+
+   deps->addPostCondition(loopCnt, TR::RealRegister::NoReg);
+   deps->getPostConditions()->getRegisterDependency(deps->getAddCursorForPost() - 1)->setExcludeGPR0();
+   deps->addPostCondition(result, TR::RealRegister::NoReg);
+   deps->getPostConditions()->getRegisterDependency(deps->getAddCursorForPost() - 1)->setExcludeGPR0();
+   deps->addPostCondition(arrAddress, TR::RealRegister::NoReg);
+   deps->addPostCondition(endPos, TR::RealRegister::NoReg);
+   deps->addPostCondition(position, TR::RealRegister::NoReg);
+   deps->getPostConditions()->getRegisterDependency(deps->getAddCursorForPost() - 1)->setExcludeGPR0();
+   deps->addPostCondition(target, TR::RealRegister::NoReg);
+
+   deps->addPostCondition(vec0, TR::RealRegister::NoReg);
+   deps->addPostCondition(vec1, TR::RealRegister::NoReg);
+   deps->addPostCondition(vec2, TR::RealRegister::NoReg);
+
+   //srm->addScratchRegistersToDependencyList(deps, true);
+
+   generateDepLabelInstruction(cg, TR::InstOpCode::label, node, endLabel, deps);
+
+   deps->stopUsingDepRegs(cg, result);
+
+   node->setRegister(result);
+
+   cg->decReferenceCount(node->getChild(0));
+   cg->decReferenceCount(node->getChild(1));
+   cg->decReferenceCount(node->getChild(2));
+   cg->decReferenceCount(node->getChild(3));
+   cg->decReferenceCount(node->getChild(4));
+
+   return result;
+   }
+
 static TR::Register *inlineIntrinsicIndexOf(TR::Node *node, TR::CodeGenerator *cg, bool isLatin1)
    {
+      if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P10) &&
+                            cg->comp()->target().cpu.supportsFeature(OMR_FEATURE_PPC_HAS_VSX))
+         return inlineIntrinsicIndexOfP10(node, cg, isLatin1);
    TR::Compilation *comp = cg->comp();
    auto vectorCompareOp = isLatin1 ? TR::InstOpCode::vcmpequb_r : TR::InstOpCode::vcmpequh_r;
    auto scalarLoadOp = isLatin1 ? TR::InstOpCode::lbzx : TR::InstOpCode::lhzx;
